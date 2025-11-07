@@ -1,0 +1,335 @@
+mport numpy as np
+import random
+import pandas as pd
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.colors as mcolors
+import matplotlib.cm as cm
+import os
+import csv
+from datetime import datetime
+import numpy as np
+import random
+from tqdm import tqdm
+SIZE = 9
+MINES = 10
+
+def create_board():
+    board = [[0 for _ in range(SIZE)] for _ in range(SIZE)]
+    all_cells = [(i, j) for i in range(SIZE) for j in range(SIZE)]
+    mines = random.sample(all_cells, MINES)
+    for (x, y) in mines:
+        board[x][y] = -1
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < SIZE and 0 <= ny < SIZE and board[nx][ny] != -1:
+                    board[nx][ny] += 1
+    return board, mines
+
+def generate_initial_data(num_samples=10000):
+    X_list, Y_list = [], []
+    for _ in range(num_samples):
+        board, mines = create_board()
+        open_board = np.full((SIZE, SIZE), -2)
+        safe_pos = [(i,j) for i in range(SIZE) for j in range(SIZE) if board[i][j] != -1]
+        for (x, y) in random.sample(safe_pos, min(2, len(safe_pos))):
+            open_board[x][y] = board[x][y]
+        label_board = np.zeros((SIZE, SIZE), dtype=int)
+        for i in range(SIZE):
+            for j in range(SIZE):
+                if board[i][j] == -1:
+                    label_board[i][j] = 1
+        X_list.append(open_board)
+        Y_list.append(label_board)
+    X_data = np.array(X_list)[..., np.newaxis]
+    Y_data = np.array(Y_list)
+    return X_data, Y_data
+
+def get_model():
+    model = models.Sequential([
+        layers.Input(shape=(SIZE, SIZE, 1)),
+        layers.Conv2D(32, (3,3), activation='relu', padding='same'),
+        layers.Conv2D(64, (3,3), activation='relu', padding='same'),
+        layers.Flatten(),
+        layers.Dense(SIZE*SIZE, activation='sigmoid'),
+        layers.Reshape((SIZE, SIZE))
+    ])
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+# 초기 데이터 생성 및 모델 학습
+X0, Y0 = generate_initial_data(num_samples=15000)
+X_train, X_test, Y_train, Y_test = train_test_split(X0, Y0, test_size=0.1, random_state=42)
+
+model = get_model()
+with tf.device('/GPU:0'):
+    model.fit(X_train, Y_train, batch_size=64, epochs=20, validation_data=(X_test, Y_test))
+def ai_self_play_batch_full(model, num_games=5000, max_steps=40, batch_size=128):
+    X_list, Y_list = [], []
+
+    for game_start in tqdm(range(0, num_games, batch_size), desc="Self-play"):
+        actual_batch = min(batch_size, num_games - game_start)
+        batch_boards, batch_openeds, batch_openboards = [], [], []
+
+        for _ in range(actual_batch):
+            board, _ = create_board()
+            open_board = np.full((SIZE, SIZE), -2)
+            opened = np.zeros((SIZE, SIZE), dtype=bool)
+
+            safe_pos = [(i, j) for i in range(SIZE) for j in range(SIZE) if board[i][j] != -1]
+            if not safe_pos:
+                continue
+            x0, y0 = random.choice(safe_pos)
+            open_board[x0][y0] = board[x0][y0]
+            opened[x0][y0] = True
+
+            batch_boards.append(board)
+            batch_openeds.append(opened)
+            batch_openboards.append(open_board)
+
+        for _ in range(max_steps):
+            if not batch_openboards:
+                break
+
+            inputs = np.array(batch_openboards)[..., np.newaxis]
+            with tf.device('/GPU:0'):
+                preds = model.predict(inputs, verbose=0)
+
+            next_boards, next_openeds, next_openboards = [], [], []
+
+            for idx in range(len(batch_openboards)):
+                board = batch_boards[idx]
+                opened = batch_openeds[idx]
+                open_board = batch_openboards[idx]
+                pred = preds[idx]
+
+                label_board = np.zeros((SIZE, SIZE), dtype=int)
+                for i in range(SIZE):
+                    for j in range(SIZE):
+                        if board[i][j] == -1:
+                            label_board[i][j] = 1
+                X_list.append(open_board.copy())
+                Y_list.append(label_board)
+
+                unopened = [(i, j) for i in range(SIZE) for j in range(SIZE) if not opened[i][j]]
+                if not unopened:
+                    continue
+
+                pred_masked = np.where(opened, 1, pred)
+                x, y = np.unravel_index(np.argmin(pred_masked), pred.shape)
+
+                if board[x][y] == -1:
+                    continue
+
+                open_board[x][y] = board[x][y]
+                opened[x][y] = True
+
+                next_boards.append(board)
+                next_openeds.append(opened)
+                next_openboards.append(open_board)
+
+            batch_boards = next_boards
+            batch_openeds = next_openeds
+            batch_openboards = next_openboards
+
+    X_data = np.array(X_list)[..., np.newaxis]
+    Y_data = np.array(Y_list)
+    return X_data, Y_data
+# Self-play 실행
+X1, Y1 = ai_self_play_batch_full(model, num_games=50000, max_steps=71)
+print("Self-play 데이터 크기:", X1.shape, Y1.shape)
+
+# Self-play 데이터로 재학습
+X_total = np.concatenate([X0, X1], axis=0)
+Y_total = np.concatenate([Y0, Y1], axis=0)
+X_train, X_test, Y_train, Y_test = train_test_split(X_total, Y_total, test_size=0.1, random_state=42)
+
+model = get_model()
+with tf.device('/GPU:0'):
+    model.fit(X_train, Y_train, batch_size=64, epochs=10, validation_data=(X_test, Y_test))
+def visualize_prediction(model):
+    # 1. 무작위 지뢰판 생성
+    board, _ = create_board()
+    board = np.array(board)  # 리스트를 넘파이 배열로 변환하여 튜플 인덱싱 가능하게 함
+
+    # 2. 초기 열린 보드 및 상태 생성
+    open_board = np.full((SIZE, SIZE), -2)  # -2는 닫힌 상태
+    opened = np.zeros((SIZE, SIZE), dtype=bool)
+
+    # 3. 지뢰가 아닌 안전한 칸 중 무작위로 1칸 열기
+    safe_cells = [(i, j) for i in range(SIZE) for j in range(SIZE) if board[i, j] != -1]
+    x, y = random.choice(safe_cells)
+    open_board[x, y] = board[x, y]
+    opened[x, y] = True
+
+    # 4. AI 예측 수행 (입력은 4차원 텐서: (1, 9, 9, 1))
+    input_tensor = open_board[np.newaxis, ..., np.newaxis]
+    prediction = model.predict(input_tensor, verbose=0)[0]  # shape: (9, 9)
+
+    # 5. 시각화 (3개 서브플롯)
+    plt.figure(figsize=(12, 4))
+
+    # (1) 실제 지뢰 위치
+    plt.subplot(1, 3, 1)
+    plt.title("① 실제 지뢰 위치 (-1 = 지뢰)")
+
+    # 배경은 회색톤으로 깔아두고
+    plt.gca().set_facecolor('white')
+    for i in range(SIZE + 1):
+        plt.axhline(i - 0.5, color='lightgray', linewidth=1)
+        plt.axvline(i - 0.5, color='lightgray', linewidth=1)
+
+    for i in range(SIZE):
+        for j in range(SIZE):
+            val = board[i, j]
+            # 지뢰면 빨간색, 아니면 검은색 숫자로 표시
+            color = 'black' if val == -1 else 'blue'
+            plt.text(j, i, str(val), ha='center', va='center', color=color, fontsize=12)
+
+    plt.xticks([])
+    plt.yticks([])
+
+
+    # (2) 처음으로 연 칸만 표시 (그 외는 닫힘 상태)
+    plt.subplot(1, 3, 2)
+    plt.title("② 처음으로 연 칸 (1칸만 열림)")
+    # 처음 연 칸만 열려있고, 나머지는 닫힘(-2)
+    first_open_board = np.full((SIZE, SIZE), np.nan)
+    first_open_board[x, y] = board[x, y]  # 처음 연 칸 값만 표시
+    plt.imshow(first_open_board, cmap='viridis')
+    plt.colorbar()
+
+    # (3) AI가 예측한 지뢰 확률 (0~1 사이 값)
+    plt.subplot(1, 3, 3)
+    plt.title("③ AI 예측 지뢰 확률 (0: 안전, 1: 위험)")
+    plt.imshow(prediction, cmap='Reds')
+    plt.colorbar()
+
+    # 출력
+    plt.tight_layout()
+    plt.show()
+
+ # --- 정확도 평가 함수 정의 및 결과 출력 ---
+    def evaluate_prediction(board, prediction, threshold=0.2):
+        actual_mines = (board == -1)
+        predicted_mines = (prediction >= threshold)
+
+        TP = np.sum(actual_mines & predicted_mines)
+        FP = np.sum(~actual_mines & predicted_mines)
+        TN = np.sum(~actual_mines & ~predicted_mines)
+        FN = np.sum(actual_mines & ~predicted_mines)
+
+        accuracy = (TP + TN) / (TP + TN + FP + FN)
+        precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+        recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+        f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+
+        import pandas as pd
+        data = {
+            'True Positive (TP)': [TP],
+            'False Positive (FP)': [FP],
+            'True Negative (TN)': [TN],
+            'False Negative (FN)': [FN],
+            'Accuracy': [accuracy],
+            'Precision': [precision],
+            'Recall': [recall],
+            'F1 Score': [f1_score]
+        }
+        df = pd.DataFrame(data)
+        return df
+
+    df_result = evaluate_prediction(board, prediction, threshold=0.5)
+    print("\n=== AI 예측 성능 평가 ===")
+    print(df_result)
+visualize_prediction(model)
+def print_prediction_board(model):
+    board, mines = create_board()
+    open_board = np.full((SIZE, SIZE), -2)
+    opened = np.zeros((SIZE, SIZE), dtype=bool)
+
+    # 안전한 칸 하나 열기
+    safe_pos = [(i, j) for i in range(SIZE) for j in range(SIZE) if board[i][j] != -1]
+    x0, y0 = random.choice(safe_pos)
+    open_board[x0][y0] = board[x0][y0]
+    opened[x0][y0] = True
+
+    # AI 예측
+    in_tensor = open_board[np.newaxis, ..., np.newaxis]
+    pred = model.predict(in_tensor, verbose=0)[0]
+
+    # 숫자 출력 포맷 지정 (소수점 2자리)
+    np.set_printoptions(precision=2, suppress=True)
+
+    print("=== 현재 열린 칸 상태 (-2는 닫힘) ===")
+    print(open_board)
+
+    print("\n=== AI가 예측한 지뢰 확률 (0~1, 낮을수록 안전) ===")
+    print(np.round(pred, 2))
+
+    print("\n=== 실제 지뢰 위치 (1=지뢰, 0=안전) ===")
+    label_board = np.zeros((SIZE, SIZE), dtype=int)
+    for i in range(SIZE):
+        for j in range(SIZE):
+            if board[i][j] == -1:
+                label_board[i][j] = 1
+    print(label_board)
+
+    # 추천 위치 출력 (확률 최소 위치)
+    pred_masked = np.where(open_board != -2, 1, pred)  # 이미 열린 칸은 제외
+    next_x, next_y = np.unravel_index(np.argmin(pred_masked), pred.shape)
+    print(f"\nAI가 추천하는 다음 위치: ({next_x}, {next_y}), 확률: {pred[next_x, next_y]:.2f}")
+print_prediction_board(model)
+def ai_play_and_evaluate(model, num_games=5000, max_steps=81):
+    success = 0
+    fail = 0
+
+    for game_idx in tqdm(range(num_games), desc="AI 플레이 평가"):
+        board, _ = create_board()
+        open_board = np.full((SIZE, SIZE), -2)
+        opened = np.zeros((SIZE, SIZE), dtype=bool)
+
+        # 안전한 칸 중에서 랜덤으로 첫 칸 열기
+        safe_pos = [(i,j) for i in range(SIZE) for j in range(SIZE) if board[i][j] != -1]
+        if not safe_pos:
+            continue
+        x0, y0 = random.choice(safe_pos)
+        open_board[x0][y0] = board[x0][y0]
+        opened[x0][y0] = True
+
+        step = 1
+        success_flag = False
+
+        while step <= max_steps:
+            if np.sum(opened) == SIZE*SIZE - MINES:
+                success_flag = True
+                break
+
+            # AI 예측
+            in_tensor = open_board[np.newaxis, ..., np.newaxis]
+            pred = model.predict(in_tensor, verbose=0)[0]
+
+            # 이미 연 칸은 지뢰 아님으로 마스킹 (확률 1)
+            pred_masked = np.where(opened, 1, pred)
+
+            # 가장 안전하다고 판단한 칸 고르기
+            next_x, next_y = np.unravel_index(np.argmin(pred_masked), pred.shape)
+
+            if board[next_x][next_y] == -1:  # 지뢰 밟음
+                break
+
+            open_board[next_x][next_y] = board[next_x][next_y]
+            opened[next_x][next_y] = True
+            step += 1
+
+        if success_flag:
+            success += 1
+        else:
+            fail += 1
+
+    print(f"총 {num_games}판 중 성공: {success}회, 실패: {fail}회")
+    print(f"성공률: {(success / num_games) * 100:.2f}%")
+ai_play_and_evaluate(model, num_games=1000, max_steps=81)
