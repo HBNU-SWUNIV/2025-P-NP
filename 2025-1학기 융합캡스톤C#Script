@@ -1,0 +1,156 @@
+1번코드
+
+using UnityEngine;
+
+public class PanoramaController : MonoBehaviour
+{
+    public Transform image0;
+    public Transform image1;
+    public float moveSpeed = 0.05f;  // 기본 속도
+    public float sensitivity = 3f; // 추가 감도 조절값
+
+    private float screenWidth;
+    private float imageWidth;
+    private Camera cam;
+    //
+    void Start()
+    {
+        screenWidth = Screen.width;
+        cam = Camera.main;
+
+        SpriteRenderer sr = image0.GetComponent<SpriteRenderer>();
+        if (sr != null)
+        {
+            imageWidth = sr.bounds.size.x;
+        }
+
+        // image1을 image0 오른쪽에 붙이기
+        image1.position = image0.position + Vector3.right * imageWidth;
+    }
+
+    void Update()
+    {
+        SpriteRenderer sr0 = image0.GetComponent<SpriteRenderer>();
+        SpriteRenderer sr1 = image1.GetComponent<SpriteRenderer>();
+
+        // 레이어가 10일 때만 작동
+        if ((sr0 == null || sr0.sortingOrder != 10) && (sr1 == null || sr1.sortingOrder != 10))
+            return;
+
+        float mouseX = Input.mousePosition.x;
+        float threshold = screenWidth * 0.05f; // 5% 구역
+
+        float moveAmount = 0f;
+
+        // 왼쪽 끝 근처
+        if (mouseX < threshold)
+        {
+            moveAmount = moveSpeed * sensitivity;
+        }
+        // 오른쪽 끝 근처
+        else if (mouseX > screenWidth - threshold)
+        {
+            moveAmount = -moveSpeed * sensitivity;
+        }
+
+        Vector3 moveVec = Vector3.right * moveAmount;
+
+        image0.position += moveVec;
+        image1.position += moveVec;
+
+        // 배경 위치 순환 처리
+        if (image0.position.x + imageWidth / 2 < cam.transform.position.x - imageWidth / 2)
+        {
+            image0.position = image1.position + Vector3.right * imageWidth;
+        }
+        else if (image1.position.x + imageWidth / 2 < cam.transform.position.x - imageWidth / 2)
+        {
+            image1.position = image0.position + Vector3.right * imageWidth;
+        }
+
+        if (image0.position.x - imageWidth / 2 > cam.transform.position.x + imageWidth / 2)
+        {
+            image0.position = image1.position - Vector3.right * imageWidth;
+        }
+        else if (image1.position.x - imageWidth / 2 > cam.transform.position.x + imageWidth / 2)
+        {
+            image1.position = image0.position - Vector3.right * imageWidth;
+        }
+    }
+}
+
+2번코드
+
+using UnityEngine;
+
+public class ArrowController : MonoBehaviour
+{
+    public GameObject image0; // 인스펙터에서 드래그
+    public GameObject image1;
+
+    private void OnMouseDown()
+    {
+        // 이 스크립트가 붙은 오브젝트의 SpriteRenderer가 11이 아닐 경우 실행하지 않음
+        SpriteRenderer selfSR = GetComponent<SpriteRenderer>();
+        if (selfSR == null || selfSR.sortingOrder != 11)
+            return;
+        //
+        // 이하 기존 코드
+        ResetAllSpriteLayers();
+
+        // image0 설정
+        if (image0 != null)
+        {
+            SpriteRenderer sr0 = image0.GetComponent<SpriteRenderer>();
+            if (sr0 != null) sr0.sortingOrder = 10;
+
+            foreach (Transform child in image0.transform)
+            {
+                SpriteRenderer arrowSR = child.GetComponent<SpriteRenderer>();
+                if (arrowSR != null) arrowSR.sortingOrder = 11;
+            }
+        }
+
+        // image1 설정
+        if (image1 != null)
+        {
+            SpriteRenderer sr1 = image1.GetComponent<SpriteRenderer>();
+            if (sr1 != null) sr1.sortingOrder = 10;
+
+            foreach (Transform child in image1.transform)
+            {
+                SpriteRenderer arrowSR = child.GetComponent<SpriteRenderer>();
+                if (arrowSR != null) arrowSR.sortingOrder = 11;
+            }
+        }
+    }
+
+
+    private void ResetAllSpriteLayers()
+    {
+        SpriteRenderer[] allSprites = Object.FindObjectsByType<SpriteRenderer>(FindObjectsSortMode.None);
+        foreach (SpriteRenderer sr in allSprites)
+        {
+            sr.sortingOrder = 0;
+        }
+    }
+}
+
+3번코드
+
+using UnityEngine;
+
+public class ExitOnKey : MonoBehaviour
+{
+    void Update()
+    {
+        if (Input.GetKeyDown(KeyCode.Escape)) // ESC 키로 종료
+        {
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false; // 에디터에서 종료
+#else
+            Application.Quit(); // 빌드 실행파일에서 종료
+#endif
+        }
+    }
+}
